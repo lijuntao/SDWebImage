@@ -1,219 +1,316 @@
-//
-//  SDImageCacheTests.m
-//  SDWebImage Tests
-//
-//  Created by Bogdan Poplauschi on 20/06/14.
-//
-//
+/*
+ * This file is part of the SDWebImage package.
+ * (c) Olivier Poitrey <rs@dailymotion.com>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
 
-#define EXP_SHORTHAND   // required by Expecta
-
-
-#import <XCTest/XCTest.h>
-#import <Expecta.h>
-
-#import "SDImageCache.h"
+#import "SDTestCase.h"
+#import <SDWebImage/SDImageCache.h>
+#import <SDWebImage/SDWebImageCodersManager.h>
+#import "SDWebImageTestDecoder.h"
 
 NSString *kImageTestKey = @"TestImageKey.jpg";
 
-@interface SDImageCacheTests : XCTestCase
-@property (strong, nonatomic) SDImageCache *sharedImageCache;
+@interface SDImageCacheTests : SDTestCase
 @end
 
 @implementation SDImageCacheTests
 
-- (void)setUp
-{
-    [super setUp];
-    // Put setup code here. This method is called before the invocation of each test method in the class.
-    self.sharedImageCache = [SDImageCache sharedImageCache];
-    [self clearAllCaches];
+- (void)test01SharedImageCache {
+    expect([SDImageCache sharedImageCache]).toNot.beNil();
 }
 
-- (void)tearDown
-{
-    // Put teardown code here. This method is called after the invocation of each test method in the class.
-    [super tearDown];
+- (void)test02Singleton{
+    expect([SDImageCache sharedImageCache]).to.equal([SDImageCache sharedImageCache]);
 }
 
-- (void)testSharedImageCache {
-    expect(self.sharedImageCache).toNot.beNil();
+- (void)test03ImageCacheCanBeInstantiated {
+    SDImageCache *imageCache = [[SDImageCache alloc] init];
+    expect(imageCache).toNot.equal([SDImageCache sharedImageCache]);
 }
 
-- (void)testSingleton{
-    expect(self.sharedImageCache).to.equal([SDImageCache sharedImageCache]);
-}
-
-- (void)testClearDiskCache{
-    [self.sharedImageCache storeImage:[self imageForTesting] forKey:kImageTestKey];
-    [self.sharedImageCache clearDiskOnCompletion:^{
-        expect([self.sharedImageCache diskImageExistsWithKey:kImageTestKey]).to.equal(NO);
-        expect([self.sharedImageCache imageFromMemoryCacheForKey:kImageTestKey]).to.equal([self imageForTesting]);
+- (void)test04ClearDiskCache{
+    XCTestExpectation *expectation = [self expectationWithDescription:@"Clear disk cache"];
+    
+    [[SDImageCache sharedImageCache] storeImage:[self imageForTesting] forKey:kImageTestKey completion:nil];
+    [[SDImageCache sharedImageCache] clearDiskOnCompletion:^{
+        expect([[SDImageCache sharedImageCache] imageFromMemoryCacheForKey:kImageTestKey]).to.equal([self imageForTesting]);
+        [[SDImageCache sharedImageCache] diskImageExistsWithKey:kImageTestKey completion:^(BOOL isInCache) {
+            if (!isInCache) {
+                [[SDImageCache sharedImageCache] calculateSizeWithCompletionBlock:^(NSUInteger fileCount, NSUInteger totalSize) {
+                    expect(fileCount).to.equal(0);
+                    [[SDImageCache sharedImageCache] removeImageForKey:kImageTestKey withCompletion:^{
+                        [expectation fulfill];
+                    }];
+                }];
+            } else {
+                XCTFail(@"Image should not be in cache");
+            }
+        }];
     }];
+    [self waitForExpectationsWithCommonTimeout];
 }
 
-- (void)testClearMemoryCache{
-    [self.sharedImageCache storeImage:[self imageForTesting] forKey:kImageTestKey];
-    [self.sharedImageCache clearMemory];
-    expect([self.sharedImageCache imageFromMemoryCacheForKey:kImageTestKey]).to.beNil;
-    // Seems not able to access the files correctly (maybe only from test?)
-    //expect([self.sharedImageCache diskImageExistsWithKey:kImageTestKey]).to.equal(YES);
-    [self.sharedImageCache diskImageExistsWithKey:kImageTestKey completion:^(BOOL isInCache) {
-        expect(isInCache).to.equal(YES);
+- (void)test05ClearMemoryCache{
+    XCTestExpectation *expectation = [self expectationWithDescription:@"Clear memory cache"];
+    
+    [[SDImageCache sharedImageCache] storeImage:[self imageForTesting] forKey:kImageTestKey completion:^{
+        [[SDImageCache sharedImageCache] clearMemory];
+        expect([[SDImageCache sharedImageCache] imageFromMemoryCacheForKey:kImageTestKey]).to.beNil;
+        [[SDImageCache sharedImageCache] diskImageExistsWithKey:kImageTestKey completion:^(BOOL isInCache) {
+            if (isInCache) {
+                [[SDImageCache sharedImageCache] removeImageForKey:kImageTestKey withCompletion:^{
+                    [expectation fulfill];
+                }];
+            } else {
+                XCTFail(@"Image should be in cache");
+            }
+        }];
     }];
+    [self waitForExpectationsWithCommonTimeout];
 }
 
 // Testing storeImage:forKey:
-- (void)testInsertionOfImage {
+- (void)test06InsertionOfImage {
+    XCTestExpectation *expectation = [self expectationWithDescription:@"storeImage forKey"];
+    
     UIImage *image = [self imageForTesting];
-    [self.sharedImageCache storeImage:image forKey:kImageTestKey];
-    expect([self.sharedImageCache imageFromMemoryCacheForKey:kImageTestKey]).to.equal(image);
-    expect([self.sharedImageCache imageFromDiskCacheForKey:kImageTestKey]).to.equal(image);
+    [[SDImageCache sharedImageCache] storeImage:image forKey:kImageTestKey completion:nil];
+    expect([[SDImageCache sharedImageCache] imageFromMemoryCacheForKey:kImageTestKey]).to.equal(image);
+    [[SDImageCache sharedImageCache] diskImageExistsWithKey:kImageTestKey completion:^(BOOL isInCache) {
+        if (isInCache) {
+            [[SDImageCache sharedImageCache] removeImageForKey:kImageTestKey withCompletion:^{
+                [expectation fulfill];
+            }];
+        } else {
+            XCTFail(@"Image should be in cache");
+        }
+    }];
+    [self waitForExpectationsWithCommonTimeout];
 }
 
 // Testing storeImage:forKey:toDisk:YES
-- (void)testInsertionOfImageForcingDiskStorage{
+- (void)test07InsertionOfImageForcingDiskStorage {
+    XCTestExpectation *expectation = [self expectationWithDescription:@"storeImage forKey toDisk=YES"];
+    
     UIImage *image = [self imageForTesting];
-    [self.sharedImageCache storeImage:image forKey:kImageTestKey toDisk:YES];
-    expect([self.sharedImageCache imageFromMemoryCacheForKey:kImageTestKey]).to.equal(image);
-    // Seems not able to access the files correctly (maybe only from test?)
-    //expect([self.sharedImageCache diskImageExistsWithKey:kImageTestKey]).to.equal(YES);
-    [self.sharedImageCache diskImageExistsWithKey:kImageTestKey completion:^(BOOL isInCache) {
-        expect(isInCache).to.equal(YES);
+    [[SDImageCache sharedImageCache] storeImage:image forKey:kImageTestKey toDisk:YES completion:nil];
+    expect([[SDImageCache sharedImageCache] imageFromMemoryCacheForKey:kImageTestKey]).to.equal(image);
+    [[SDImageCache sharedImageCache] diskImageExistsWithKey:kImageTestKey completion:^(BOOL isInCache) {
+        if (isInCache) {
+            [[SDImageCache sharedImageCache] removeImageForKey:kImageTestKey withCompletion:^{
+                [expectation fulfill];
+            }];
+        } else {
+            XCTFail(@"Image should be in cache");
+        }
     }];
+    [self waitForExpectationsWithCommonTimeout];
 }
 
 // Testing storeImage:forKey:toDisk:NO
-- (void)testInsertionOfImageOnlyInMemory {
+- (void)test08InsertionOfImageOnlyInMemory {
+    XCTestExpectation *expectation = [self expectationWithDescription:@"storeImage forKey toDisk=NO"];
     UIImage *image = [self imageForTesting];
-    [self.sharedImageCache storeImage:image forKey:@"TestImage" toDisk:NO];
-    [self.sharedImageCache diskImageExistsWithKey:@"TestImage" completion:^(BOOL isInCache) {
-        expect(isInCache).to.equal(YES);
+    [[SDImageCache sharedImageCache] storeImage:image forKey:kImageTestKey toDisk:NO completion:nil];
+    
+    expect([[SDImageCache sharedImageCache] imageFromMemoryCacheForKey:kImageTestKey]).to.equal([self imageForTesting]);
+    [[SDImageCache sharedImageCache] diskImageExistsWithKey:kImageTestKey completion:^(BOOL isInCache) {
+        if (!isInCache) {
+            [expectation fulfill];
+        } else {
+            XCTFail(@"Image should not be in cache");
+        }
     }];
-    [self.sharedImageCache clearMemory];
-    [self.sharedImageCache diskImageExistsWithKey:@"TestImage" completion:^(BOOL isInCache) {
-        expect(isInCache).to.equal(NO);
-    }];
+    [[SDImageCache sharedImageCache] clearMemory];
+    expect([[SDImageCache sharedImageCache] imageFromMemoryCacheForKey:kImageTestKey]).to.beNil();
+    [self waitForExpectationsWithCommonTimeout];
 }
 
-- (void)testRetrievalImageThroughNSOperation{
-    //- (NSOperation *)queryDiskCacheForKey:(NSString *)key done:(SDWebImageQueryCompletedBlock)doneBlock;
+- (void)test09RetrieveImageThroughNSOperation {
+    XCTestExpectation *expectation = [self expectationWithDescription:@"queryCacheOperationForKey"];
     UIImage *imageForTesting = [self imageForTesting];
-    [self.sharedImageCache storeImage:imageForTesting forKey:kImageTestKey];
-    NSOperation *operation = [self.sharedImageCache queryDiskCacheForKey:kImageTestKey done:^(UIImage *image, SDImageCacheType cacheType) {
+    [[SDImageCache sharedImageCache] storeImage:imageForTesting forKey:kImageTestKey completion:nil];
+    NSOperation *operation = [[SDImageCache sharedImageCache] queryCacheOperationForKey:kImageTestKey done:^(UIImage *image, NSData *data, SDImageCacheType cacheType) {
         expect(image).to.equal(imageForTesting);
+        [[SDImageCache sharedImageCache] removeImageForKey:kImageTestKey withCompletion:^{
+            [expectation fulfill];
+        }];
     }];
     expect(operation).toNot.beNil;
+    [operation start];
+    [self waitForExpectationsWithCommonTimeout];
 }
 
-- (void)testRemoveImageForKey{
-    [self.sharedImageCache storeImage:[self imageForTesting] forKey:kImageTestKey];
-    [self.sharedImageCache removeImageForKey:kImageTestKey];
-    expect([self.sharedImageCache imageFromMemoryCacheForKey:kImageTestKey]).to.beNil;
-    expect([self.sharedImageCache imageFromDiskCacheForKey:kImageTestKey]).to.beNil;
-}
-
-- (void)testRemoveImageForKeyWithCompletion{
-    [self.sharedImageCache storeImage:[self imageForTesting] forKey:kImageTestKey];
-    [self.sharedImageCache removeImageForKey:kImageTestKey withCompletion:^{
-        expect([self.sharedImageCache imageFromDiskCacheForKey:kImageTestKey]).to.beNil;
-        expect([self.sharedImageCache imageFromMemoryCacheForKey:kImageTestKey]).to.beNil;
+- (void)test10RemoveImageForKeyWithCompletion {
+    XCTestExpectation *expectation = [self expectationWithDescription:@"removeImageForKey"];
+    [[SDImageCache sharedImageCache] storeImage:[self imageForTesting] forKey:kImageTestKey completion:nil];
+    [[SDImageCache sharedImageCache] removeImageForKey:kImageTestKey withCompletion:^{
+        expect([[SDImageCache sharedImageCache] imageFromDiskCacheForKey:kImageTestKey]).to.beNil;
+        expect([[SDImageCache sharedImageCache] imageFromMemoryCacheForKey:kImageTestKey]).to.beNil;
+        [expectation fulfill];
     }];
+    [self waitForExpectationsWithCommonTimeout];
 }
 
-- (void)testRemoveImageForKeyNotFromDisk{
-    [self.sharedImageCache storeImage:[self imageForTesting] forKey:kImageTestKey];
-    [self.sharedImageCache removeImageForKey:kImageTestKey fromDisk:NO];
-    expect([self.sharedImageCache imageFromDiskCacheForKey:kImageTestKey]).toNot.beNil;
-    expect([self.sharedImageCache imageFromMemoryCacheForKey:kImageTestKey]).to.beNil;
-}
-
-- (void)testRemoveImageForKeyFromDisk{
-    [self.sharedImageCache storeImage:[self imageForTesting] forKey:kImageTestKey];
-    [self.sharedImageCache removeImageForKey:kImageTestKey fromDisk:NO];
-    expect([self.sharedImageCache imageFromDiskCacheForKey:kImageTestKey]).to.beNil;
-    expect([self.sharedImageCache imageFromMemoryCacheForKey:kImageTestKey]).to.beNil;
-}
-
-- (void)testRemoveImageforKeyNotFromDiskWithCompletion{
-    [self.sharedImageCache storeImage:[self imageForTesting] forKey:kImageTestKey];
-    [self.sharedImageCache removeImageForKey:kImageTestKey fromDisk:NO withCompletion:^{
-        expect([self.sharedImageCache imageFromDiskCacheForKey:kImageTestKey]).toNot.beNil;
-        expect([self.sharedImageCache imageFromMemoryCacheForKey:kImageTestKey]).to.beNil;
+- (void)test11RemoveImageforKeyNotFromDiskWithCompletion{
+    XCTestExpectation *expectation = [self expectationWithDescription:@"removeImageForKey fromDisk:NO"];
+    [[SDImageCache sharedImageCache] storeImage:[self imageForTesting] forKey:kImageTestKey completion:nil];
+    [[SDImageCache sharedImageCache] removeImageForKey:kImageTestKey fromDisk:NO withCompletion:^{
+        expect([[SDImageCache sharedImageCache] imageFromDiskCacheForKey:kImageTestKey]).toNot.beNil;
+        expect([[SDImageCache sharedImageCache] imageFromMemoryCacheForKey:kImageTestKey]).to.beNil;
+        [expectation fulfill];
     }];
+    [self waitForExpectationsWithCommonTimeout];
 }
 
-- (void)testRemoveImageforKeyFromDiskWithCompletion{
-    [self.sharedImageCache storeImage:[self imageForTesting] forKey:kImageTestKey];
-    [self.sharedImageCache removeImageForKey:kImageTestKey fromDisk:YES withCompletion:^{
-        expect([self.sharedImageCache imageFromDiskCacheForKey:kImageTestKey]).to.beNil;
-        expect([self.sharedImageCache imageFromMemoryCacheForKey:kImageTestKey]).to.beNil;
+- (void)test12RemoveImageforKeyFromDiskWithCompletion{
+    XCTestExpectation *expectation = [self expectationWithDescription:@"removeImageForKey fromDisk:YES"];
+    [[SDImageCache sharedImageCache] storeImage:[self imageForTesting] forKey:kImageTestKey completion:nil];
+    [[SDImageCache sharedImageCache] removeImageForKey:kImageTestKey fromDisk:YES withCompletion:^{
+        expect([[SDImageCache sharedImageCache] imageFromDiskCacheForKey:kImageTestKey]).to.beNil;
+        expect([[SDImageCache sharedImageCache] imageFromMemoryCacheForKey:kImageTestKey]).to.beNil;
+        [expectation fulfill];
     }];
+    [self waitForExpectationsWithCommonTimeout];
 }
 
-// TODO -- Testing insertion with recalculate
-- (void)testInsertionOfImageOnlyInDisk {
+- (void)test20InitialCacheSize{
+    expect([[SDImageCache sharedImageCache] getSize]).to.equal(0);
 }
 
-- (void)testInitialCacheSize{
-    expect([self.sharedImageCache getSize]).to.equal(0);
+- (void)test21InitialDiskCount{
+    XCTestExpectation *expectation = [self expectationWithDescription:@"getDiskCount"];
+    [[SDImageCache sharedImageCache] storeImage:[self imageForTesting] forKey:kImageTestKey completion:^{
+        expect([[SDImageCache sharedImageCache] getDiskCount]).to.equal(1);
+        [[SDImageCache sharedImageCache] removeImageForKey:kImageTestKey withCompletion:^{
+            [expectation fulfill];
+        }];
+    }];
+    [self waitForExpectationsWithCommonTimeout];
 }
 
-- (void)testInitialDiskCount{
-    [self.sharedImageCache storeImage:[self imageForTesting] forKey:kImageTestKey];
-    expect([self.sharedImageCache getDiskCount]).to.equal(1);
-}
-
-- (void)testDiskCountAfterInsertion{
-    [self.sharedImageCache storeImage:[self imageForTesting] forKey:kImageTestKey];
-    expect([self.sharedImageCache getDiskCount]).to.equal(1);
-}
-
-- (void)testDefaultCachePathForAnyKey{
-    NSString *path = [self.sharedImageCache defaultCachePathForKey:kImageTestKey];
+- (void)test31DefaultCachePathForAnyKey{
+    NSString *path = [[SDImageCache sharedImageCache] defaultCachePathForKey:kImageTestKey];
     expect(path).toNot.beNil;
 }
 
-- (void)testCachePathForNonExistingKey{
-    NSString *path = [self.sharedImageCache cachePathForKey:kImageTestKey inPath:[self.sharedImageCache defaultCachePathForKey:kImageTestKey]];
+- (void)test32CachePathForNonExistingKey{
+    NSString *path = [[SDImageCache sharedImageCache] cachePathForKey:kImageTestKey inPath:[[SDImageCache sharedImageCache] defaultCachePathForKey:kImageTestKey]];
     expect(path).to.beNil;
 }
 
-- (void)testCachePathForExistingKey{
-    [self.sharedImageCache storeImage:[self imageForTesting] forKey:kImageTestKey];
-    NSString *path = [self.sharedImageCache cachePathForKey:kImageTestKey inPath:[self.sharedImageCache defaultCachePathForKey:kImageTestKey]];
-    expect(path).notTo.beNil;
+- (void)test33CachePathForExistingKey{
+    XCTestExpectation *expectation = [self expectationWithDescription:@"cachePathForKey inPath"];
+    [[SDImageCache sharedImageCache] storeImage:[self imageForTesting] forKey:kImageTestKey completion:^{
+        NSString *path = [[SDImageCache sharedImageCache] cachePathForKey:kImageTestKey inPath:[[SDImageCache sharedImageCache] defaultCachePathForKey:kImageTestKey]];
+        expect(path).notTo.beNil;
+        [[SDImageCache sharedImageCache] removeImageForKey:kImageTestKey withCompletion:^{
+            [expectation fulfill];
+        }];
+    }];
+    [self waitForExpectationsWithCommonTimeout];
 }
 
-// TODO -- Testing image data insertion
+- (void)test34CachePathForSimpleKeyWithExtension {
+    NSString *cachePath = [[SDImageCache sharedImageCache] cachePathForKey:kTestJpegURL inPath:@""];
+    expect(cachePath).toNot.beNil();
+    expect([cachePath pathExtension]).to.equal(@"jpg");
+}
 
-- (void)testInsertionOfImageData {
+- (void)test35CachePathForKeyWithDotButNoExtension {
+    NSString *urlString = @"https://maps.googleapis.com/maps/api/staticmap?center=48.8566,2.3522&format=png&maptype=roadmap&scale=2&size=375x200&zoom=15";
+    NSString *cachePath = [[SDImageCache sharedImageCache] cachePathForKey:urlString inPath:@""];
+    expect(cachePath).toNot.beNil();
+    expect([cachePath pathExtension]).to.equal(@"");
+}
+
+- (void)test40InsertionOfImageData {
+    XCTestExpectation *expectation = [self expectationWithDescription:@"Insertion of image data works"];
     
-    NSData *imageData = [NSData dataWithContentsOfFile:[self testImagePath]];
-    [self.sharedImageCache storeImageDataToDisk:imageData forKey:kImageTestKey];
+    UIImage *image = [UIImage imageWithContentsOfFile:[self testImagePath]];
+    NSData *imageData = UIImageJPEGRepresentation(image, 1.0);
+    [[SDImageCache sharedImageCache] storeImageDataToDisk:imageData forKey:kImageTestKey];
     
-    UIImage *storedImageFromMemory = [self.sharedImageCache imageFromMemoryCacheForKey:kImageTestKey];
+    UIImage *storedImageFromMemory = [[SDImageCache sharedImageCache] imageFromMemoryCacheForKey:kImageTestKey];
     expect(storedImageFromMemory).to.equal(nil);
     
-    NSString *cachePath = [self.sharedImageCache defaultCachePathForKey:kImageTestKey];
-    NSData *storedImageData = [NSData dataWithContentsOfFile:cachePath];
-    expect([storedImageData isEqualToData:imageData]).will.beTruthy;
+    NSString *cachePath = [[SDImageCache sharedImageCache] defaultCachePathForKey:kImageTestKey];
+    UIImage *cachedImage = [UIImage imageWithContentsOfFile:cachePath];
+    NSData *storedImageData = UIImageJPEGRepresentation(cachedImage, 1.0);
+    expect(storedImageData.length).to.beGreaterThan(0);
+    expect(cachedImage.size).to.equal(image.size);
+    // can't directly compare image and cachedImage because apparently there are some slight differences, even though the image is the same
     
-    [self.sharedImageCache diskImageExistsWithKey:kImageTestKey completion:^(BOOL isInCache) {
+    [[SDImageCache sharedImageCache] diskImageExistsWithKey:kImageTestKey completion:^(BOOL isInCache) {
         expect(isInCache).to.equal(YES);
+        
+        [[SDImageCache sharedImageCache] removeImageForKey:kImageTestKey withCompletion:^{
+            [expectation fulfill];
+        }];
     }];
+    
+    [self waitForExpectationsWithCommonTimeout];
+}
+
+- (void)test41ThatCustomDecoderWorksForImageCache {
+    XCTestExpectation *expectation = [self expectationWithDescription:@"Custom decoder for SDImageCache not works"];
+    SDImageCache *cache = [[SDImageCache alloc] initWithNamespace:@"TestDecode"];
+    SDWebImageTestDecoder *testDecoder = [[SDWebImageTestDecoder alloc] init];
+    [[SDWebImageCodersManager sharedInstance] addCoder:testDecoder];
+    NSString * testImagePath = [[NSBundle bundleForClass:[self class]] pathForResource:@"TestImage" ofType:@"png"];
+    UIImage *image = [UIImage imageWithContentsOfFile:testImagePath];
+    NSString *key = @"TestPNGImageEncodedToDataAndRetrieveToJPEG";
+    
+    [cache storeImage:image imageData:nil forKey:key toDisk:YES completion:^{
+        [cache clearMemory];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wundeclared-selector"
+        SEL diskImageDataBySearchingAllPathsForKey = @selector(diskImageDataBySearchingAllPathsForKey:);
+#pragma clang diagnostic pop
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        NSData *data = [cache performSelector:diskImageDataBySearchingAllPathsForKey withObject:key];
+#pragma clang diagnostic pop
+        NSString *str1 = @"TestEncode";
+        NSString *str2 = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        if (![str1 isEqualToString:str2]) {
+            XCTFail(@"Custom decoder not work for SDImageCache, check -[SDWebImageTestDecoder encodedDataWithImage:format:]");
+        }
+        
+        UIImage *diskCacheImage = [cache imageFromDiskCacheForKey:key];
+        
+        // Decoded result is JPEG
+        NSString * decodedImagePath = [[NSBundle bundleForClass:[self class]] pathForResource:@"TestImage" ofType:@"jpg"];
+        UIImage *testJPEGImage = [UIImage imageWithContentsOfFile:decodedImagePath];
+        
+        NSData *data1 = UIImagePNGRepresentation(testJPEGImage);
+        NSData *data2 = UIImagePNGRepresentation(diskCacheImage);
+        
+        if (![data1 isEqualToData:data2]) {
+            XCTFail(@"Custom decoder not work for SDImageCache, check -[SDWebImageTestDecoder decodedImageWithData:]");
+        }
+        
+        [[SDWebImageCodersManager sharedInstance] removeCoder:testDecoder];
+        
+        [[SDImageCache sharedImageCache] removeImageForKey:key withCompletion:^{
+            [expectation fulfill];
+        }];
+    }];
+    
+    [self waitForExpectationsWithCommonTimeout];
 }
 
 #pragma mark Helper methods
 
-- (void)clearAllCaches{
-    [self.sharedImageCache clearDisk];
-    [self.sharedImageCache clearMemory];
-}
-
 - (UIImage *)imageForTesting{
-    
-    return [UIImage imageWithContentsOfFile:[self testImagePath]];
+    static UIImage *reusableImage = nil;
+    if (!reusableImage) {
+        reusableImage = [UIImage imageWithContentsOfFile:[self testImagePath]];
+    }
+    return reusableImage;
 }
 
 - (NSString *)testImagePath {
